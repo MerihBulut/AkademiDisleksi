@@ -1,4 +1,7 @@
 streamlit
 openai
 fpdf2
-requests
+azure-cognitiveservices-speech
+python-dotenv
+pydub
+reportlab
