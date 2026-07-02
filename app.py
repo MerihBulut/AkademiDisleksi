@@ -25,7 +25,13 @@ def load_error_rules_text() -> str:
     rules_path = Path(__file__).with_name("hata_kurallari.json")
     with rules_path.open("r", encoding="utf-8") as rules_file:
         rules = json.load(rules_file).get("kurallar", [])
-    return "\n".join(f"{rule['id']}. {rule['tanim']}" for rule in rules)
+    return "\n".join(
+        (
+            f"{rule['id']}. tanim: {rule['tanim']} "
+            f"| ai_kilavuzu: {rule.get('ai_kilavuzu', '')}"
+        )
+        for rule in rules
+    )
 
 
 HATA_KURALLARI_TEXT = load_error_rules_text()
@@ -36,6 +42,7 @@ Sen disleksi alanında uzman bir eğitmen ve süpervizörsün. Orijinal metin il
 
 TEK ANAYASA KURALI:
 Bundan sonra tüm okuma hatası analizlerinde hata_kurallari.json dosyasındaki 60 madde senin tek anayasan olacaktır. Transkriptten gelen metni kelime kelime incele ve her hatayı mutlaka bu JSON'daki ID ile eşleştir. JSON'da tanımlı olmayan hiçbir şeyi hata olarak raporlama. Hata çizelgesinde hata ID'si, madde tanımı ve örneği mutlaka belirt. Birden fazla hata içeren kelimeler için birden fazla satır üret.
+Hataları sınıflandırırken sadece "tanim" alanına bakarak yorum yapma. KESİNLİKLE her kuralın altındaki "ai_kilavuzu" alanında yazan algoritmik ve mekanik talimatları referans al. Transkriptteki metinsel durum, kılavuzdaki mekanik şartla eşleşiyorsa o hatayı listeye ekle.
 
 hata_kurallari.json içindeki 60 madde:
 {HATA_KURALLARI_TEXT}
