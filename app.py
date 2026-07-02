@@ -1,6 +1,7 @@
 import json
 import mimetypes
 import os
+import urllib.request
 from pathlib import Path
 
 import requests
@@ -265,59 +266,66 @@ def generate_analysis(
     }
 
 
-def get_unicode_font_paths() -> tuple[str, str | None]:
-    candidates = [
-        Path(r"C:\Windows\Fonts\arial.ttf"),
-        Path(r"C:\Windows\Fonts\calibri.ttf"),
-    ]
+def ensure_dejavu_fonts() -> tuple[str, str]:
+    fonts_dir = Path(__file__).resolve().parent / "fonts"
+    fonts_dir.mkdir(exist_ok=True)
 
-    try:
-        import fpdf
+    font_sources = {
+        "DejaVuSans.ttf": (
+            "https://raw.githubusercontent.com/senotrusov/dejavu-fonts-ttf/"
+            "master/ttf/DejaVuSans.ttf"
+        ),
+        "DejaVuSans-Bold.ttf": (
+            "https://raw.githubusercontent.com/senotrusov/dejavu-fonts-ttf/"
+            "master/ttf/DejaVuSans-Bold.ttf"
+        ),
+    }
 
-        font_dir = Path(fpdf.__file__).parent / "font"
-        candidates = [
-            font_dir / "DejaVuSans.ttf",
-            font_dir / "DejaVuSansCondensed.ttf",
-            *candidates,
-        ]
-    except Exception:
-        pass
+    for filename, url in font_sources.items():
+        font_path = fonts_dir / filename
+        if not font_path.exists():
+            urllib.request.urlretrieve(url, font_path)
 
-    regular = next((str(path) for path in candidates if path.exists()), None)
-    if not regular:
-        raise FileNotFoundError("Türkçe karakter destekleyen font bulunamadı.")
-
-    bold_candidates = [
-        Path(regular).with_name("DejaVuSans-Bold.ttf"),
-        Path(r"C:\Windows\Fonts\arialbd.ttf"),
-        Path(r"C:\Windows\Fonts\calibrib.ttf"),
-    ]
-    bold = next((str(path) for path in bold_candidates if path.exists()), None)
-    return regular, bold
+    return str(fonts_dir / "DejaVuSans.ttf"), str(fonts_dir / "DejaVuSans-Bold.ttf")
 
 
 class ReadingReportPDF(FPDF):
+    NAVY = (26, 54, 93)
+    TEXT = (45, 55, 72)
+    MUTED = (113, 128, 150)
+    BORDER = (226, 232, 240)
+    ZEBRA = (247, 250, 252)
+    WHITE = (255, 255, 255)
+
     def __init__(self):
         super().__init__()
-        regular, bold = get_unicode_font_paths()
-        self.add_font("AppFont", "", regular)
-        self.has_bold = bool(bold)
-        if bold:
-            self.add_font("AppFont", "B", bold)
+        regular, bold = ensure_dejavu_fonts()
+        self.add_font("DejaVu", "", regular, uni=True)
+        self.add_font("DejaVu", "B", bold, uni=True)
         self.set_auto_page_break(auto=True, margin=15)
+        self.set_margins(14, 14, 14)
+        self.set_text_color(*self.TEXT)
+        self.set_draw_color(*self.BORDER)
+        self.set_line_width(0.2)
 
     def _font_style(self, bold: bool = False) -> str:
-        return "B" if bold and self.has_bold else ""
+        return "B" if bold else ""
 
     def _ensure_space(self, height: float) -> None:
         if self.get_y() + height > self.page_break_trigger:
             self.add_page()
 
     def _section_title(self, title: str) -> None:
-        self._ensure_space(12)
-        self.set_font("AppFont", self._font_style(bold=True), size=13)
+        self._ensure_space(14)
+        self.set_text_color(*self.NAVY)
+        self.set_font("DejaVu", self._font_style(bold=True), size=13)
         self.multi_cell(0, 8, title)
-        self.ln(2)
+        y = self.get_y()
+        self.set_draw_color(*self.NAVY)
+        self.line(self.l_margin, y, self.w - self.r_margin, y)
+        self.set_draw_color(*self.BORDER)
+        self.set_text_color(*self.TEXT)
+        self.ln(4)
 
     def _markdown_text(self, text: str, size: int = 11) -> None:
         for line in text.split("\n"):
@@ -329,38 +337,58 @@ class ReadingReportPDF(FPDF):
 
             if stripped.startswith("### "):
                 self._ensure_space(10)
-                self.set_font("AppFont", self._font_style(bold=True), size=size)
+                self.set_text_color(*self.NAVY)
+                self.set_font("DejaVu", self._font_style(bold=True), size=size)
                 self.multi_cell(0, 6, stripped[4:].replace("**", ""))
+                self.set_text_color(*self.TEXT)
                 self.ln(2)
                 continue
 
             if stripped.startswith("## ") or stripped.startswith("# "):
                 heading = stripped.lstrip("#").strip().replace("**", "")
                 self._ensure_space(12)
-                self.set_font("AppFont", self._font_style(bold=True), size=size + 1)
+                self.set_text_color(*self.NAVY)
+                self.set_font("DejaVu", self._font_style(bold=True), size=size + 1)
                 self.multi_cell(0, 7, heading)
+                y = self.get_y()
+                self.set_draw_color(*self.BORDER)
+                self.line(self.l_margin, y, self.w - self.r_margin, y)
+                self.set_text_color(*self.TEXT)
                 self.ln(2)
                 continue
 
             if stripped.startswith(("- ", "* ")):
                 self._ensure_space(8)
-                self.set_font("AppFont", size=size)
+                self.set_font("DejaVu", size=size)
                 self.multi_cell(0, 6, f"• {stripped[2:].replace('**', '')}")
                 self.ln(1)
                 continue
 
             self._ensure_space(8)
-            self.set_font("AppFont", size=size)
+            self.set_font("DejaVu", size=size)
             self.multi_cell(0, 6, stripped.replace("**", ""))
             self.ln(1)
 
     def _metrics_table(self, metrics: list[tuple[str, str]]) -> None:
-        col_width = (self.w - 2 * self.l_margin) / 2
-        self.set_font("AppFont", size=10)
+        col_width = (self.w - self.l_margin - self.r_margin) / 2
+        box_height = 11
         for label, value in metrics:
-            self._ensure_space(8)
-            self.cell(col_width, 7, f"{label}: {value}", border=1)
-            self.ln(7)
+            self._ensure_space(box_height)
+            x = self.get_x()
+            y = self.get_y()
+            self.set_fill_color(*self.ZEBRA)
+            self.set_draw_color(*self.BORDER)
+            self.rect(x, y, col_width, box_height, "DF")
+            self.set_xy(x + 3, y + 2)
+            self.set_text_color(*self.MUTED)
+            self.set_font("DejaVu", size=8)
+            self.multi_cell(col_width * 0.58, 4, label, border=0)
+            self.set_xy(x + col_width * 0.62, y + 2)
+            self.set_text_color(*self.NAVY)
+            self.set_font("DejaVu", "B", size=10)
+            self.multi_cell(col_width * 0.34, 5, value, border=0, align="R")
+            self.set_text_color(*self.TEXT)
+            self.set_xy(x, y + box_height)
 
     def _timeline_table(self, timeline: list[dict]) -> None:
         usable_width = self.w - 2 * self.l_margin
@@ -383,10 +411,11 @@ class ReadingReportPDF(FPDF):
             "Açıklama / Örnek",
         ]
         line_height = 5
-        row_padding = 2
+        cell_padding = 2
+        row_padding = cell_padding * 2
 
         def estimate_cell_height(text: str, width: float) -> float:
-            usable_cell_width = max(width - 2, 1)
+            usable_cell_width = max(width - (cell_padding * 2), 1)
             total_lines = 0
 
             for paragraph in str(text).split("\n") or [""]:
@@ -410,7 +439,7 @@ class ReadingReportPDF(FPDF):
             return max(8, total_lines * line_height + row_padding)
 
         def draw_header() -> None:
-            self.set_font("AppFont", self._font_style(bold=True), size=8)
+            self.set_font("DejaVu", self._font_style(bold=True), size=8)
             header_height = max(
                 estimate_cell_height(header, col_widths[idx])
                 for idx, header in enumerate(headers)
@@ -420,21 +449,29 @@ class ReadingReportPDF(FPDF):
             y_start = self.get_y()
             for idx, header in enumerate(headers):
                 x_cell = x_start + sum(col_widths[:idx])
-                self.rect(x_cell, y_start, col_widths[idx], header_height)
-                self.set_xy(x_cell + 1, y_start + 1)
-                self.multi_cell(col_widths[idx] - 2, line_height, header, border=0)
+                self.set_fill_color(*self.NAVY)
+                self.set_draw_color(*self.NAVY)
+                self.rect(x_cell, y_start, col_widths[idx], header_height, "DF")
+                self.set_xy(x_cell + cell_padding, y_start + cell_padding)
+                self.set_text_color(*self.WHITE)
+                self.multi_cell(col_widths[idx] - (cell_padding * 2), line_height, header, border=0)
             self.set_xy(x_start, y_start + header_height)
-            self.set_font("AppFont", size=8)
+            self.set_text_color(*self.TEXT)
+            self.set_draw_color(*self.BORDER)
+            self.set_font("DejaVu", size=8)
 
         draw_header()
         if not timeline:
             self._ensure_space(8)
+            self.set_text_color(*self.MUTED)
+            self.set_font("DejaVu", size=9)
             self.multi_cell(sum(col_widths), 8, "Hata kaydı bulunamadı.", border=1)
+            self.set_text_color(*self.TEXT)
             self.ln(8)
             return
 
-        self.set_font("AppFont", size=8)
-        for item in timeline:
+        self.set_font("DejaVu", size=8)
+        for row_index, item in enumerate(timeline):
             row = [
                 str(item.get("time", "-")),
                 str(item.get("rule_id", "-")),
@@ -455,13 +492,20 @@ class ReadingReportPDF(FPDF):
 
             x_start = self.get_x()
             y_start = self.get_y()
+            fill_color = self.ZEBRA if row_index % 2 else self.WHITE
 
             for idx, value in enumerate(row):
                 x_cell = x_start + sum(col_widths[:idx])
-                self.rect(x_cell, y_start, col_widths[idx], row_height)
-                self.set_xy(x_cell + 1, y_start + 1)
-                self.multi_cell(col_widths[idx] - 2, line_height, value, border=0)
+                self.set_fill_color(*fill_color)
+                self.set_draw_color(*self.BORDER)
+                self.rect(x_cell, y_start, col_widths[idx], row_height, "DF")
+                self.set_xy(x_cell + cell_padding, y_start + cell_padding)
+                self.set_text_color(*self.NAVY if idx in (0, 1) else self.TEXT)
+                self.set_font("DejaVu", self._font_style(bold=idx in (0, 1)), size=8)
+                self.multi_cell(col_widths[idx] - (cell_padding * 2), line_height, value, border=0)
 
+            self.set_text_color(*self.TEXT)
+            self.set_font("DejaVu", size=8)
             self.set_xy(x_start, y_start + row_height)
 
 
@@ -469,9 +513,14 @@ def build_pdf(analysis: dict) -> bytes:
     pdf = ReadingReportPDF()
     pdf.add_page()
 
-    pdf.set_font("AppFont", pdf._font_style(bold=True), size=16)
-    pdf.cell(0, 10, "Periyodik Eğitsel Değerlendirme Raporu", align="C", new_x="LMARGIN", new_y="NEXT")
-    pdf.ln(4)
+    pdf.set_fill_color(*pdf.NAVY)
+    pdf.rect(0, 0, pdf.w, 28, "F")
+    pdf.set_y(9)
+    pdf.set_text_color(*pdf.WHITE)
+    pdf.set_font("DejaVu", pdf._font_style(bold=True), size=17)
+    pdf.multi_cell(0, 8, "Periyodik Eğitsel Değerlendirme Raporu", align="C")
+    pdf.set_text_color(*pdf.TEXT)
+    pdf.ln(8)
 
     pdf._section_title("Genel Metrikler")
     pdf._metrics_table(
