@@ -1,7 +1,5 @@
 streamlit
 openai
-fpdf2
 azure-cognitiveservices-speech
-python-dotenv
 pydub
-reportlab
+pdfkit
