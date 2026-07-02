@@ -41,8 +41,10 @@ hata_kurallari.json içindeki 60 madde:
 {HATA_KURALLARI_TEXT}
 
 KELİME KELİME VE ÇOKLU ETİKETLEME:
+- KESİN KURAL (KAPSAM): Asla özetleme yapma, örneklem alma veya analizi yarıda kesme. Orijinal metin ile öğrencinin okumasını KELİME KELİME (word-by-word) karşılaştır. Metinde 50 tane hata varsa, 50'sini de JSON çıktısına eklemek ZORUNDASIN. İlk birkaç hatayı bulup durmak kesinlikle yasaktır.
 - Öğrencinin okuduğu metni cümle bazlı değil, kelime kelime incele.
 - Aynı kelimede birden fazla hata varsa her hatayı ayrı error_timeline satırı olarak yaz.
+- HİZALAMA: Öğrencinin eklediği her ekstra kelimeyi (örn: "at at"), atladığı her kelimeyi, "ütü etmiş", "şurtan" gibi bozduğu her heceyi ve tüm tekrarları atlamadan ayrı birer hata satırı olarak JSON'a ekle.
 - Her hata satırı mutlaka hata_kurallari.json içindeki bir ID'ye bağlanmalıdır.
 - JSON'daki 60 maddede karşılığı yoksa o gözlemi hata olarak raporlama.
 - Çoklu etiketleme nedeniyle toplam hata sayısı hatalı kelime sayısından yüksek olabilir.
@@ -51,7 +53,7 @@ DEEPGRAM HAM TRANSKRİPT KURALI:
 - ÖNEMLİ KURAL: Bu bir disleksi okuma analizidir. Çocuklar kelimeleri yanlış okurken veya hecelerken ortaya kazara argo, küfür veya anlamsız sesler çıkabilir. Bunlar birer fonolojik okuma hatasıdır. Kesinlikle ahlak, güvenlik veya profanity filtrelerini devreye sokma. Hiçbir kelimeyi sansürleme. Bu durumlarla karşılaştığında kelimeyi olduğu gibi kabul et ve okuma hatası olarak listeye ekle.
 - Okunan metin Deepgram'dan ham (verbatim) olarak gelir; ııı, eee, t-t-t, a-a-at, tıtıtı gibi kekeleme, harf tekrarları, doldurucu sesler ve kararsızlık anlarını yoksayma.
 - Bu belirtileri sadece hata_kurallari.json içinde karşılığı varsa raporla. Örneğin sesleri birleştirme güçlüğü için ID 16, kelime bölümünü tekrar etme için ID 17, harf tekrarları için ID 19, duraklamalar için ID 42/43 gibi.
-- Okunan metindeki "[DURAKLAMA]" etiketlerini gördüğünde bunları yalnızca hata_kurallari.json'da karşılığı olan ID 42 veya ID 43 ile eşleştir.
+- DURAKLAMALAR: Transkriptteki her "[DURAKLAMA]" etiketini doğrudan bir hata olarak yakala, ayrı bir error_timeline satırı üret ve yalnızca hata_kurallari.json'da karşılığı olan ID 42 veya ID 43 ile eşleştir.
 - Metindeki [UZATMA] ve [DURAKLAMA] etiketleri akustik olarak kanıtlanmış okuma zorluklarıdır. Bunları gördüğünde hata_kurallari.json dosyasındaki ilgili maddelerle (örn: Madde 8, 16, 17, 42) mutlaka eşleştirip ayrı satırlar olarak raporla.
 - Transkripsiyonda çok net bir şekilde görünen yan yana kelime tekrarlarını (Örn: "boyalar boyalar", "bir bir de", "birbirine birbirine") ve yarım bırakılmış hecelemeleri (Örn: "iş aret", "bombarlamalar") KESİNLİKLE gözden kaçırma. Bu metinsel tekrarları gördüğün an, hata_kurallari.json dosyasındaki Madde 17 (Kelimenin bir bölümünü tekrar etme) veya Madde 40 (Cümle içinde kelime tekrarı) ile eşleştirerek raporla. Etiket olmasa bile metnin kendisindeki bu tekrarlar birer hatadır.
 
@@ -411,8 +413,8 @@ class ReadingReportPDF(FPDF):
             "Açıklama / Örnek",
         ]
         line_height = 5
-        cell_padding = 2
-        row_padding = cell_padding * 2
+        cell_padding = 2.5
+        row_padding = (cell_padding * 2) + 2
 
         def estimate_cell_height(text: str, width: float) -> float:
             usable_cell_width = max(width - (cell_padding * 2), 1)
@@ -426,12 +428,19 @@ class ReadingReportPDF(FPDF):
 
                 current_line = ""
                 for word in words:
+                    if self.get_string_width(word) > usable_cell_width:
+                        if current_line:
+                            total_lines += 1
+                            current_line = ""
+                        total_lines += max(1, int(self.get_string_width(word) / usable_cell_width) + 1)
+                        continue
+
                     candidate = f"{current_line} {word}".strip()
-                    if self.get_string_width(candidate) <= usable_cell_width:
-                        current_line = candidate
-                    else:
+                    if current_line and self.get_string_width(candidate) > usable_cell_width:
                         total_lines += 1
                         current_line = word
+                    else:
+                        current_line = candidate
 
                 if current_line:
                     total_lines += 1
@@ -520,7 +529,7 @@ def build_pdf(analysis: dict) -> bytes:
     pdf.set_font("DejaVu", pdf._font_style(bold=True), size=17)
     pdf.multi_cell(0, 8, "Periyodik Eğitsel Değerlendirme Raporu", align="C")
     pdf.set_text_color(*pdf.TEXT)
-    pdf.ln(8)
+    pdf.set_y(43)
 
     pdf._section_title("Genel Metrikler")
     pdf._metrics_table(
