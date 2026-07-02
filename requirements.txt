@@ -3,3 +3,4 @@ openai
 azure-cognitiveservices-speech
 pydub
 fpdf
+python-dotenv
