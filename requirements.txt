@@ -1,0 +1,4 @@
+streamlit
+openai
+fpdf2
+requests
