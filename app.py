@@ -621,7 +621,10 @@ original_text = st.text_area(
     placeholder="Öğrencinin okuması beklenen metni buraya yazın...",
 )
 
-uploaded_file = st.file_uploader("Bir ses dosyası seçin (WAV veya MP3)", type=["wav", "mp3"])
+uploaded_file = st.file_uploader(
+    "Ses veya Video Dosyasını Yükleyin (MP3, WAV, M4A, MP4 vb.)",
+    type=["mp3", "wav", "m4a", "mp4", "aac", "ogg", "flac", "amr"],
+)
 
 if uploaded_file is not None:
     st.audio(uploaded_file)
