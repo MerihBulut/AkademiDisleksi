@@ -1,2 +1,3 @@
 ffmpeg
 libasound2
+libssl-dev
