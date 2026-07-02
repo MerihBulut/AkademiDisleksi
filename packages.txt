@@ -1,6 +1,1 @@
 ffmpeg
-libasound2
-libssl-dev
-wkhtmltopdf
-rustc
-cargo
