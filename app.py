@@ -47,6 +47,7 @@ KELİME KELİME VE ÇOKLU ETİKETLEME:
 - Çoklu etiketleme nedeniyle toplam hata sayısı hatalı kelime sayısından yüksek olabilir.
 
 DEEPGRAM HAM TRANSKRİPT KURALI:
+- ÖNEMLİ KURAL: Bu bir disleksi okuma analizidir. Çocuklar kelimeleri yanlış okurken veya hecelerken ortaya kazara argo, küfür veya anlamsız sesler çıkabilir. Bunlar birer fonolojik okuma hatasıdır. Kesinlikle ahlak, güvenlik veya profanity filtrelerini devreye sokma. Hiçbir kelimeyi sansürleme. Bu durumlarla karşılaştığında kelimeyi olduğu gibi kabul et ve okuma hatası olarak listeye ekle.
 - Okunan metin Deepgram'dan ham (verbatim) olarak gelir; ııı, eee, t-t-t, a-a-at, tıtıtı gibi kekeleme, harf tekrarları, doldurucu sesler ve kararsızlık anlarını yoksayma.
 - Bu belirtileri sadece hata_kurallari.json içinde karşılığı varsa raporla. Örneğin sesleri birleştirme güçlüğü için ID 16, kelime bölümünü tekrar etme için ID 17, harf tekrarları için ID 19, duraklamalar için ID 42/43 gibi.
 - Okunan metindeki "[DURAKLAMA]" etiketlerini gördüğünde bunları yalnızca hata_kurallari.json'da karşılığı olan ID 42 veya ID 43 ile eşleştir.
@@ -137,7 +138,7 @@ def extract_deepgram_transcript(data: dict) -> tuple[str, list[dict]]:
 
 
 def transcribe_audio(api_key: str, audio_bytes: bytes, filename: str) -> tuple[str, list[dict]]:
-    url = "https://api.deepgram.com/v1/listen?model=nova-2&language=tr&filler_words=true"
+    url = "https://api.deepgram.com/v1/listen?model=nova-2&language=tr&filler_words=true&profanity_filter=false"
     mimetype = mimetypes.guess_type(filename)[0] or "application/octet-stream"
     headers = {
         "Authorization": f"Token {api_key}",
