@@ -1,9 +1,11 @@
+import hashlib
 import json
 import os
 import tempfile
 import threading
 import unicodedata
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date
 from io import BytesIO
 from pathlib import Path
@@ -58,6 +60,10 @@ def normalize_utf8_text(text: str) -> str:
 
 def replace_pause_tags(text: str) -> str:
     return normalize_utf8_text(str(text or "").replace("[DURAKLAMA]", PAUSE_SYMBOL))
+
+
+def replace_pause_for_pdf(text: str) -> str:
+    return replace_pause_tags(text).replace(PAUSE_SYMBOL, ". . .")
 
 
 SYSTEM_PROMPT = f"""Sen profesyonel bir disleksi uzmanısın. Sana öğrencinin orijinal okuması gereken metni ve Azure'un BİRE BİR kaydettiği ham okuma transkriptini gönderiyorum.
@@ -584,6 +590,42 @@ def synthesize_unified_expert_report(client: OpenAI, results: list[dict]) -> str
         return build_unified_expert_report(results)
 
 
+def analyze_transcript_chunks_in_parallel(
+    client: OpenAI,
+    original_text: str,
+    chunks: list[dict],
+    wpm: float,
+    max_workers: int = 3,
+) -> list[dict]:
+    valid_chunks = [
+        (index, chunk)
+        for index, chunk in enumerate(chunks)
+        if str(chunk.get("text", "")).strip()
+    ]
+    if not valid_chunks:
+        return []
+
+    ordered_results: list[tuple[int, dict]] = []
+    worker_count = min(max_workers, len(valid_chunks))
+
+    with ThreadPoolExecutor(max_workers=worker_count) as executor:
+        future_to_chunk = {
+            executor.submit(request_gpt_analysis, client, original_text, chunk["text"], wpm): (index, chunk)
+            for index, chunk in valid_chunks
+        }
+
+        for future in as_completed(future_to_chunk):
+            index, chunk = future_to_chunk[future]
+            chunk_result = future.result()
+            chunk_result["error_timeline"] = apply_global_time_offset(
+                chunk_result.get("error_timeline", []),
+                chunk.get("start"),
+            )
+            ordered_results.append((index, chunk_result))
+
+    return [result for _, result in sorted(ordered_results, key=lambda item: item[0])]
+
+
 def generate_analysis(
     client: OpenAI,
     original_text: str,
@@ -596,19 +638,12 @@ def generate_analysis(
     transcribed_text_for_gpt = replace_pause_tags(transcribed_text)
 
     chunks = split_transcript_into_time_chunks(transcribed_text_for_gpt, words, chunk_seconds=40)
-    analiz_sonuclari = []
-
-    for chunk in chunks:
-        if not chunk["text"].strip():
-            continue
-
-        chunk_result = request_gpt_analysis(client, original_text_for_gpt, chunk["text"], wpm)
-        time_offset = chunk.get("start")
-        chunk_result["error_timeline"] = apply_global_time_offset(
-            chunk_result.get("error_timeline", []),
-            time_offset,
-        )
-        analiz_sonuclari.append(chunk_result)
+    analiz_sonuclari = analyze_transcript_chunks_in_parallel(
+        client,
+        original_text_for_gpt,
+        chunks,
+        wpm,
+    )
 
     if not analiz_sonuclari:
         raise ValueError("Analiz edilecek transkript parçası bulunamadı.")
@@ -864,7 +899,7 @@ class ReadingReportPDF:
         current_y += 5
         self.set_text_color(*self.TEXT)
         self.set_font("DejaVu", size=7.5)
-        self._draw_clipped_text(inner_x, current_y, inner_width, 24, replace_pause_tags(analysis.get("transcribed_text", "")), line_height=4)
+        self._draw_clipped_text(inner_x, current_y, inner_width, 24, replace_pause_for_pdf(analysis.get("transcribed_text", "")), line_height=4)
 
         self.set_y(y + box_height + 6)
         self.set_text_color(*self.TEXT)
@@ -1015,8 +1050,9 @@ def register_reportlab_fonts() -> tuple[str, str]:
     return "DejaVu", "DejaVu-Bold"
 
 
-def paragraph(text: str, style: ParagraphStyle) -> Paragraph:
-    safe_text = str(text or "-").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+def paragraph(text: str, style: ParagraphStyle, pdf_safe: bool = False) -> Paragraph:
+    content = replace_pause_for_pdf(text) if pdf_safe else str(text or "-")
+    safe_text = content.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
     safe_text = safe_text.replace("\n", "<br/>")
     return Paragraph(safe_text, style)
 
@@ -1036,7 +1072,7 @@ def markdown_to_flowables(markdown_text: str, styles: dict) -> list:
             flowables.append(Spacer(1, 6))
             flowables.append(paragraph(line[2:], styles["section"]))
             continue
-        flowables.append(paragraph(line.replace("**", ""), styles["body"]))
+        flowables.append(paragraph(line.replace("**", ""), styles["body"], pdf_safe=True))
     return flowables
 
 
@@ -1118,7 +1154,7 @@ def build_pdf(analysis: dict) -> bytes:
         [paragraph("Orijinal Metin", styles["small_bold"])],
         [paragraph(analysis.get("original_text", "-"), styles["small"])],
         [paragraph("Öğrenci Transkripti", styles["small_bold"])],
-        [paragraph(replace_pause_tags(analysis.get("transcribed_text", "-")), styles["small"])],
+        [paragraph(analysis.get("transcribed_text", "-"), styles["small"], pdf_safe=True)],
     ]
     intro_table = Table(intro_data, colWidths=[doc.width * 0.9], hAlign="LEFT")
     intro_table.setStyle(
@@ -1176,10 +1212,10 @@ def build_pdf(analysis: dict) -> bytes:
                 paragraph(item.get("time", "-"), styles["small"]),
                 paragraph(item.get("rule_id", "-"), styles["small"]),
                 paragraph(item.get("category", "-"), styles["small"]),
-                paragraph(rule_definition, styles["small"]),
-                paragraph(item.get("student_reading", "-"), styles["small"]),
-                paragraph(item.get("expected_reading", "-"), styles["small"]),
-                paragraph(item.get("description", "-"), styles["small"]),
+                paragraph(rule_definition, styles["small"], pdf_safe=True),
+                paragraph(item.get("student_reading", "-"), styles["small"], pdf_safe=True),
+                paragraph(item.get("expected_reading", "-"), styles["small"], pdf_safe=True),
+                paragraph(item.get("description", "-"), styles["small"], pdf_safe=True),
             ]
         )
 
@@ -1222,6 +1258,27 @@ def build_pdf_filename(analysis: dict) -> str:
     tarih = analysis.get("test_date") or "tarih"
     raw_filename = f"{ogrenci_adi}_{sinif}_{tarih}_okuma_analiz_raporu.pdf"
     return "_".join(raw_filename.split())
+
+
+def build_analysis_cache_key(
+    audio_bytes: bytes,
+    original_text: str,
+    student_name: str,
+    student_class: str,
+    test_date_text: str,
+) -> str:
+    payload = "\n".join(
+        [
+            normalize_utf8_text(original_text.strip()),
+            normalize_utf8_text(student_name.strip()),
+            normalize_utf8_text(student_class.strip()),
+            test_date_text,
+        ]
+    ).encode("utf-8")
+    digest = hashlib.sha256()
+    digest.update(audio_bytes)
+    digest.update(payload)
+    return digest.hexdigest()
 
 
 def render_error_metrics(error_counts: dict) -> None:
@@ -1282,7 +1339,7 @@ def render_analysis_results(analysis: dict) -> None:
     st.subheader("Hata Zaman Çizelgesi")
     render_timeline_table(analysis["error_timeline"])
 
-    pdf_bytes = build_pdf(analysis)
+    pdf_bytes = analysis.get("_pdf_bytes") or build_pdf(analysis)
     st.download_button(
         label="PDF Raporu İndir",
         data=pdf_bytes,
@@ -1294,74 +1351,100 @@ def render_analysis_results(analysis: dict) -> None:
 st.title("Okuma ve Ses Analiz Sistemi")
 st.write("Öğrencinin okuma kaydını yükleyerek hataları ve duraklamaları analiz edin.")
 
-student_col1, student_col2, student_col3 = st.columns(3)
-student_name = student_col1.text_input("Öğrenci Adı", placeholder="Ad Soyad")
-student_class = student_col2.text_input("Sınıf", placeholder="Örn: 2-A")
-test_date = student_col3.date_input("Test Tarihi", value=date.today())
+with st.form("reading_analysis_form", clear_on_submit=False):
+    student_col1, student_col2, student_col3 = st.columns(3)
+    student_name = student_col1.text_input("Öğrenci Adı", placeholder="Ad Soyad")
+    student_class = student_col2.text_input("Sınıf", placeholder="Örn: 2-A")
+    test_date = student_col3.date_input("Test Tarihi", value=date.today())
 
-original_text = st.text_area(
-    "Okunması Beklenen Orijinal Metin",
-    height=150,
-    placeholder="Öğrencinin okuması beklenen metni buraya yazın...",
-)
+    original_text = st.text_area(
+        "Okunması Beklenen Orijinal Metin",
+        height=150,
+        placeholder="Öğrencinin okuması beklenen metni buraya yazın...",
+    )
 
-uploaded_file = st.file_uploader(
-    "Ses veya Video Dosyasını Yükleyin (MP3, WAV, M4A, MP4 vb.)",
-    type=["mp3", "wav", "m4a", "mp4", "aac", "ogg", "flac", "amr"],
-)
+    uploaded_file = st.file_uploader(
+        "Ses veya Video Dosyasını Yükleyin (MP3, WAV, M4A, MP4 vb.)",
+        type=["mp3", "wav", "m4a", "mp4", "aac", "ogg", "flac", "amr"],
+    )
 
-if uploaded_file is not None:
-    st.audio(uploaded_file)
+    if uploaded_file is not None:
+        st.audio(uploaded_file)
 
-if st.button("Analiz Et"):
+    analyze_submitted = st.form_submit_button("Analiz Et")
+
+if analyze_submitted:
     if not original_text.strip():
         st.warning("Lütfen okunması beklenen orijinal metni girin.")
     elif uploaded_file is None:
         st.warning("Lütfen bir ses dosyası yükleyin.")
     else:
+        uploaded_file.seek(0)
+        audio_bytes = uploaded_file.read()
         normalized_original_text = normalize_utf8_text(original_text.strip())
-        openai_client = get_openai_client()
-        speech_key, speech_region = get_azure_speech_credentials()
+        test_date_text = test_date.strftime("%d.%m.%Y")
+        analysis_cache_key = build_analysis_cache_key(
+            audio_bytes,
+            normalized_original_text,
+            student_name,
+            student_class,
+            test_date_text,
+        )
 
-        with st.spinner("Ses dosyası Azure standart transkripsiyon ile yazıya dökülüyor..."):
-            uploaded_file.seek(0)
-            audio_bytes = uploaded_file.read()
-            transcript_text, words, azure_analysis_text = transcribe_audio(
-                speech_key,
-                speech_region,
-                audio_bytes,
-                uploaded_file.name,
-            )
+        if (
+            st.session_state.get("analysis_status") == "completed"
+            and st.session_state.get("analysis_cache_key") == analysis_cache_key
+            and st.session_state.get("analysis")
+        ):
+            st.info("Bu dosya ve bilgiler için analiz zaten tamamlandı; mevcut rapor gösteriliyor.")
+        else:
+            st.session_state["analysis_status"] = "running"
+            st.session_state["analysis_cache_key"] = analysis_cache_key
 
-        transcribed_text = normalize_utf8_text(transcript_text)
-        wpm, duration_sec = calculate_wpm(words)
+            openai_client = get_openai_client()
+            speech_key, speech_region = get_azure_speech_credentials()
 
-        with st.spinner("Disleksi uzmanı raporu hazırlanıyor..."):
-            try:
-                analysis_result = generate_analysis(
-                    openai_client,
-                    normalized_original_text,
-                    transcribed_text,
-                    wpm,
-                    words,
-                    azure_analysis_text,
+            with st.spinner("Ses dosyası Azure standart transkripsiyon ile yazıya dökülüyor..."):
+                transcript_text, words, azure_analysis_text = transcribe_audio(
+                    speech_key,
+                    speech_region,
+                    audio_bytes,
+                    uploaded_file.name,
                 )
-            except ValueError as exc:
-                st.error(str(exc))
-                st.stop()
 
-        st.session_state["analysis"] = {
-            "wpm": wpm,
-            "word_count": len(words),
-            "duration_sec": duration_sec,
-            "transcribed_text": transcribed_text,
-            "original_text": normalized_original_text,
-            "student_name": normalize_utf8_text(student_name.strip()),
-            "student_class": normalize_utf8_text(student_class.strip()),
-            "test_date": test_date.strftime("%d.%m.%Y"),
-            "azure_analysis_text": azure_analysis_text,
-            **analysis_result,
-        }
+            transcribed_text = normalize_utf8_text(transcript_text)
+            wpm, duration_sec = calculate_wpm(words)
+
+            with st.spinner("Disleksi uzmanı raporu hazırlanıyor..."):
+                try:
+                    analysis_result = generate_analysis(
+                        openai_client,
+                        normalized_original_text,
+                        transcribed_text,
+                        wpm,
+                        words,
+                        azure_analysis_text,
+                    )
+                except ValueError as exc:
+                    st.session_state["analysis_status"] = "failed"
+                    st.error(str(exc))
+                    st.stop()
+
+            analysis_payload = {
+                "wpm": wpm,
+                "word_count": len(words),
+                "duration_sec": duration_sec,
+                "transcribed_text": transcribed_text,
+                "original_text": normalized_original_text,
+                "student_name": normalize_utf8_text(student_name.strip()),
+                "student_class": normalize_utf8_text(student_class.strip()),
+                "test_date": test_date_text,
+                "azure_analysis_text": azure_analysis_text,
+                **analysis_result,
+            }
+            analysis_payload["_pdf_bytes"] = build_pdf(analysis_payload)
+            st.session_state["analysis"] = analysis_payload
+            st.session_state["analysis_status"] = "completed"
 
 if st.session_state.get("analysis"):
     render_analysis_results(st.session_state["analysis"])
